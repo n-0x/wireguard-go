@@ -24,6 +24,10 @@ type outboundQueue struct {
 }
 
 func newOutboundQueue() *outboundQueue {
+	return newOutboundQueueWithNotify(nil)
+}
+
+func newOutboundQueueWithNotify(onClosed func()) *outboundQueue {
 	q := &outboundQueue{
 		c: make(chan *QueueOutboundElementsContainer, QueueOutboundSize),
 	}
@@ -31,6 +35,9 @@ func newOutboundQueue() *outboundQueue {
 	go func() {
 		q.wg.Wait()
 		close(q.c)
+		if onClosed != nil {
+			onClosed()
+		}
 	}()
 	return q
 }
@@ -42,6 +49,10 @@ type inboundQueue struct {
 }
 
 func newInboundQueue() *inboundQueue {
+	return newInboundQueueWithNotify(nil)
+}
+
+func newInboundQueueWithNotify(onClosed func()) *inboundQueue {
 	q := &inboundQueue{
 		c: make(chan *QueueInboundElementsContainer, QueueInboundSize),
 	}
@@ -49,6 +60,9 @@ func newInboundQueue() *inboundQueue {
 	go func() {
 		q.wg.Wait()
 		close(q.c)
+		if onClosed != nil {
+			onClosed()
+		}
 	}()
 	return q
 }

@@ -222,7 +222,7 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 		for peer, elemsContainer := range elemsByPeer {
 			if peer.isRunning.Load() {
 				peer.queue.inbound.c <- elemsContainer
-				device.queue.decryption.c <- elemsContainer
+				device.enqueueDecryption(elemsContainer)
 			} else {
 				for _, elem := range elemsContainer.elems {
 					device.PutMessageBuffer(elem.buffer)
@@ -235,35 +235,44 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 	}
 }
 
+type decryptionScratch struct {
+	nonce [chacha20poly1305.NonceSize]byte
+}
+
 func (device *Device) RoutineDecryption(id int) {
-	var nonce [chacha20poly1305.NonceSize]byte
+	var scratch decryptionScratch
 
 	defer device.log.Verbosef("Routine: decryption worker %d - stopped", id)
 	device.log.Verbosef("Routine: decryption worker %d - started", id)
 
 	for elemsContainer := range device.queue.decryption.c {
-		for _, elem := range elemsContainer.elems {
-			// split message into fields
-			counter := elem.packet[MessageTransportOffsetCounter:MessageTransportOffsetContent]
-			content := elem.packet[MessageTransportOffsetContent:]
-
-			// decrypt and release to consumer
-			var err error
-			elem.counter = binary.LittleEndian.Uint64(counter)
-			// copy counter to nonce
-			binary.LittleEndian.PutUint64(nonce[0x4:0xc], elem.counter)
-			elem.packet, err = elem.keypair.receive.Open(
-				content[:0],
-				nonce[:],
-				content,
-				nil,
-			)
-			if err != nil {
-				elem.packet = nil
-			}
-		}
-		elemsContainer.Unlock()
+		device.decryptBatch(elemsContainer, &scratch)
 	}
+}
+
+func (device *Device) decryptBatch(elemsContainer *QueueInboundElementsContainer, scratch *decryptionScratch) {
+	nonce := &scratch.nonce
+	for _, elem := range elemsContainer.elems {
+		// split message into fields
+		counter := elem.packet[MessageTransportOffsetCounter:MessageTransportOffsetContent]
+		content := elem.packet[MessageTransportOffsetContent:]
+
+		// decrypt and release to consumer
+		var err error
+		elem.counter = binary.LittleEndian.Uint64(counter)
+		// copy counter to nonce
+		binary.LittleEndian.PutUint64(nonce[0x4:0xc], elem.counter)
+		elem.packet, err = elem.keypair.receive.Open(
+			content[:0],
+			nonce[:],
+			content,
+			nil,
+		)
+		if err != nil {
+			elem.packet = nil
+		}
+	}
+	elemsContainer.Unlock()
 }
 
 /* Handles incoming packets related to handshake

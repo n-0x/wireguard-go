@@ -175,6 +175,10 @@ type r2FlowPair struct {
 }
 
 func newR2FlowPair(t *testing.T) *r2FlowPair {
+	return newR2FlowPairWithExecutors(t, [2]*CryptoExecutor{})
+}
+
+func newR2FlowPairWithExecutors(t *testing.T, executors [2]*CryptoExecutor) *r2FlowPair {
 	t.Helper()
 	p := &r2FlowPair{bind: newR2WireBinds()}
 	cfg, endpoints := genConfigs(t)
@@ -184,7 +188,16 @@ func newR2FlowPair(t *testing.T) *r2FlowPair {
 		if testing.Verbose() {
 			level = LogLevelVerbose
 		}
-		p.dev[i] = NewDevice(p.tun[i], p.bind[i], NewLogger(level, fmt.Sprintf("r2-dev%d: ", i)))
+		logger := NewLogger(level, fmt.Sprintf("r2-dev%d: ", i))
+		if executors[i] == nil {
+			p.dev[i] = NewDevice(p.tun[i], p.bind[i], logger)
+		} else {
+			var err error
+			p.dev[i], err = NewDeviceWithCryptoExecutor(p.tun[i], p.bind[i], logger, executors[i])
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		if e := p.dev[i].IpcSet(cfg[i] + "preshared_key=" + fmt.Sprintf("%064x", 1) + "\nallowed_ip=" + fmt.Sprintf("fd00::%d/128", 2-i) + "\n"); e != nil {
 			t.Fatal(e)
 		}

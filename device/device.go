@@ -86,6 +86,8 @@ type Device struct {
 		mtu    atomic.Int32
 	}
 
+	crypto *cryptoRegistration
+
 	ipcMutex sync.RWMutex
 	closed   chan struct{}
 	log      *Logger
@@ -282,7 +284,12 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 }
 
 func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
+	return newDevice(tunDevice, bind, logger, nil)
+}
+
+func newDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, crypto *cryptoRegistration) *Device {
 	device := new(Device)
+	device.crypto = crypto
 	device.state.state.Store(uint32(deviceStateDown))
 	device.closed = make(chan struct{})
 	device.log = logger
@@ -303,8 +310,18 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	// create queues
 
 	device.queue.handshake = newHandshakeQueue()
-	device.queue.encryption = newOutboundQueue()
-	device.queue.decryption = newInboundQueue()
+	if crypto == nil {
+		device.queue.encryption = newOutboundQueue()
+		device.queue.decryption = newInboundQueue()
+	} else {
+		notify := func() { crypto.executor.notify(crypto) }
+		device.queue.encryption = newOutboundQueueWithNotify(notify)
+		device.queue.decryption = newInboundQueueWithNotify(notify)
+		crypto.executor.mu.Lock()
+		crypto.device = device
+		crypto.executor.cond.Broadcast()
+		crypto.executor.mu.Unlock()
+	}
 
 	// start workers
 
@@ -315,8 +332,10 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device.state.stopping.Wait()
 	device.queue.encryption.wg.Add(cpus) // One for each RoutineHandshake
 	for i := 0; i < cpus; i++ {
-		go device.RoutineEncryption(i + 1)
-		go device.RoutineDecryption(i + 1)
+		if crypto == nil {
+			go device.RoutineEncryption(i + 1)
+			go device.RoutineDecryption(i + 1)
+		}
 		go device.RoutineHandshake(i + 1)
 	}
 
@@ -395,6 +414,10 @@ func (device *Device) Close() {
 	device.queue.decryption.wg.Done()
 	device.queue.handshake.wg.Done()
 	device.state.stopping.Wait()
+
+	if device.crypto != nil {
+		device.crypto.executor.detachAndWait(device.crypto)
+	}
 
 	device.rate.limiter.Close()
 
