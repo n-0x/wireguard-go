@@ -1,4 +1,4 @@
-//go:build !r2resourceprofile
+//go:build !r2resourceprofile && (!linux || android) && (!darwin || ios)
 
 /* SPDX-License-Identifier: MIT */
 

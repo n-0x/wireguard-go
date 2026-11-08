@@ -11,7 +11,7 @@ import (
 
 type WaitPool struct {
 	pool  sync.Pool
-	cache chan any // bounded idle cache in the opt-in R2 resource profile
+	cache chan any // bounded idle cache in the dedicated R2 resource profile
 	cond  sync.Cond
 	lock  sync.Mutex
 	count uint32 // Get calls not yet Put back

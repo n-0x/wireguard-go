@@ -1,4 +1,4 @@
-//go:build linux && r2resourceprofile
+//go:build linux && (!android || r2resourceprofile)
 
 /* SPDX-License-Identifier: MIT */
 
