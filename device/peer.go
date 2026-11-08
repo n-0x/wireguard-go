@@ -17,6 +17,7 @@ import (
 
 type Peer struct {
 	isRunning         atomic.Bool
+	service           atomic.Pointer[serviceRun]
 	keypairs          Keypairs
 	handshake         Handshake
 	device            *Device
@@ -114,6 +115,15 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 }
 
 func (peer *Peer) SendBuffers(buffers [][]byte) error {
+	if err := peer.waitService(); err != nil {
+		return err
+	}
+	return peer.sendBuffers(buffers)
+}
+
+// sendBuffers completes a batch whose caller already passed a safe policy
+// boundary. It never waits for policy while a completion/peer lock is held.
+func (peer *Peer) sendBuffers(buffers [][]byte) error {
 	peer.device.net.RLock()
 	defer peer.device.net.RUnlock()
 
@@ -189,6 +199,9 @@ func (peer *Peer) Start() {
 
 	// reset routine state
 	peer.stopping.Wait()
+	if device.service != nil {
+		peer.service.Store(newServiceRun(device.service.policy, device.service.ctx))
+	}
 	peer.stopping.Add(2)
 
 	peer.handshake.mutex.Lock()
@@ -262,6 +275,9 @@ func (peer *Peer) Stop() {
 
 	if !peer.isRunning.Swap(false) {
 		return
+	}
+	if run := peer.service.Load(); run != nil {
+		run.cancel()
 	}
 
 	peer.device.log.Verbosef("%v - Stopping", peer)

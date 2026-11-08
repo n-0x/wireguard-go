@@ -52,8 +52,18 @@ func TestCryptoExecutorAdmission(t *testing.T) {
 }
 
 func newCryptoTestDevices(t *testing.T, workers int) (*CryptoExecutor, [2]*Device) {
+	return newCryptoTestDevicesWithPolicy(t, workers, nil)
+}
+
+func newCryptoTestDevicesWithPolicy(t *testing.T, workers int, policy *ServicePolicy) (*CryptoExecutor, [2]*Device) {
 	t.Helper()
-	exec, err := NewCryptoExecutor(workers)
+	var exec *CryptoExecutor
+	var err error
+	if policy == nil {
+		exec, err = NewCryptoExecutor(workers)
+	} else {
+		exec, err = NewCryptoExecutorWithServicePolicy(workers, policy)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,8 +210,22 @@ func cryptoQueueRX(t *testing.T, device *Device, aead cipher.AEAD, counter uint6
 }
 
 func TestCryptoExecutorRoundRobin(t *testing.T) {
+	testCryptoExecutorRoundRobin(t, nil)
+}
+
+func TestServiceFloorRoundRobin(t *testing.T) {
+	policy, err := NewServicePolicy(10*time.Millisecond, 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(policy.Close)
+	testCryptoExecutorRoundRobin(t, policy)
+}
+
+func testCryptoExecutorRoundRobin(t *testing.T, policy *ServicePolicy) {
+	t.Helper()
 	goroutineLeakCheck(t)
-	exec, devices := newCryptoTestDevices(t, 1)
+	exec, devices := newCryptoTestDevicesWithPolicy(t, 1, policy)
 	entered := make(chan int, 16)
 	release := make(chan struct{})
 	activity := new(cryptoActivity)
@@ -283,8 +307,28 @@ func TestCryptoExecutorParallelLanes(t *testing.T) {
 }
 
 func TestCryptoExecutorStopDrainsPendingBatch(t *testing.T) {
+	testCryptoExecutorStopDrainsPendingBatch(t, nil)
+}
+
+func TestServiceFloorStopDrainsPendingBatch(t *testing.T) {
+	policy, err := NewServicePolicy(10*time.Millisecond, 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(policy.Close)
+	testCryptoExecutorStopDrainsPendingBatch(t, policy)
+}
+
+func testCryptoExecutorStopDrainsPendingBatch(t *testing.T, policy *ServicePolicy) {
+	t.Helper()
 	goroutineLeakCheck(t)
-	exec, err := NewCryptoExecutor(1)
+	var exec *CryptoExecutor
+	var err error
+	if policy == nil {
+		exec, err = NewCryptoExecutor(1)
+	} else {
+		exec, err = NewCryptoExecutorWithServicePolicy(1, policy)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

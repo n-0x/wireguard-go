@@ -130,7 +130,7 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	peer.timersAnyAuthenticatedPacketTraversal()
 	peer.timersAnyAuthenticatedPacketSent()
 
-	err = peer.SendBuffers([][]byte{packet})
+	err = peer.sendBuffers([][]byte{packet})
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to send handshake initiation: %v", peer, err)
 	}
@@ -167,7 +167,7 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.timersAnyAuthenticatedPacketSent()
 
 	// TODO: allocation could be avoided
-	err = peer.SendBuffers([][]byte{packet})
+	err = peer.sendBuffers([][]byte{packet})
 	if err != nil {
 		peer.device.log.Errorf("%v - Failed to send handshake response: %v", peer, err)
 	}
@@ -239,7 +239,13 @@ func (device *Device) RoutineReadFromTUN() {
 
 	for {
 		// read packets
+		if err := device.service.wait(); err != nil {
+			return
+		}
 		count, readErr = device.tun.device.Read(bufs, sizes, offset)
+		if err := device.service.wait(); err != nil {
+			return
+		}
 		for i := 0; i < count; i++ {
 			if sizes[i] < 1 {
 				continue
@@ -499,6 +505,7 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		if elemsContainer == nil {
 			return
 		}
+		_ = peer.waitService() // cancellation lets accepted work drain
 		if !peer.isRunning.Load() {
 			// peer has been stopped; return re-usable elems to the shared pool.
 			// This is an optimization only. It is possible for the peer to be stopped
@@ -526,7 +533,7 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		peer.timersAnyAuthenticatedPacketTraversal()
 		peer.timersAnyAuthenticatedPacketSent()
 
-		err := peer.SendBuffers(bufs)
+		err := peer.sendBuffers(bufs)
 		if dataSent {
 			peer.timersDataSent()
 		}

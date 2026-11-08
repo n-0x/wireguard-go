@@ -6,6 +6,7 @@
 package device
 
 import (
+	"context"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -18,7 +19,8 @@ import (
 )
 
 type Device struct {
-	state struct {
+	service *serviceRun // immutable after initialization; nil is legacy
+	state   struct {
 		// state holds the device's state. It is accessed atomically.
 		// Use the device.deviceState method to read it.
 		// device.deviceState does not acquire the mutex, so it captures only a snapshot.
@@ -45,6 +47,7 @@ type Device struct {
 		port          uint16 // listening port
 		fwmark        uint32 // mark value (0 = disabled)
 		brokenRoaming bool
+		service       *serviceRun // bind run, protected by net lock
 	}
 
 	staticIdentity struct {
@@ -290,6 +293,9 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 func newDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, crypto *cryptoRegistration) *Device {
 	device := new(Device)
 	device.crypto = crypto
+	if crypto != nil && crypto.executor.servicePolicy != nil {
+		device.service = newServiceRun(crypto.executor.servicePolicy, context.Background())
+	}
 	device.state.state.Store(uint32(deviceStateDown))
 	device.closed = make(chan struct{})
 	device.log = logger
@@ -398,6 +404,10 @@ func (device *Device) Close() {
 		return
 	}
 	device.state.state.Store(uint32(deviceStateClosed))
+	if device.service != nil {
+		device.service.cancel()
+		device.crypto.executor.notify(device.crypto)
+	}
 	device.log.Verbosef("Device closing")
 
 	device.tun.device.Close()
@@ -451,6 +461,10 @@ func (device *Device) SendKeepalivesToPeersWithCurrentKeypair() {
 func closeBindLocked(device *Device) error {
 	var err error
 	netc := &device.net
+	if netc.service != nil {
+		netc.service.cancel()
+		netc.service = nil
+	}
 	if netc.netlinkCancel != nil {
 		netc.netlinkCancel.Cancel()
 	}
@@ -546,8 +560,13 @@ func (device *Device) BindUpdate() error {
 	device.queue.decryption.wg.Add(len(recvFns)) // each RoutineReceiveIncoming goroutine writes to device.queue.decryption
 	device.queue.handshake.wg.Add(len(recvFns))  // each RoutineReceiveIncoming goroutine writes to device.queue.handshake
 	batchSize := netc.bind.BatchSize()
+	service := device.service
+	if service != nil {
+		netc.service = newServiceRun(service.policy, service.ctx)
+		service = netc.service
+	}
 	for _, fn := range recvFns {
-		go device.RoutineReceiveIncoming(batchSize, fn)
+		go device.routineReceiveIncoming(batchSize, fn, service)
 	}
 
 	device.log.Verbosef("UDP bind has been updated")

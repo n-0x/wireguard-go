@@ -70,6 +70,10 @@ func (peer *Peer) keepKeyFreshReceiving() {
  * IPv4 and IPv6 (separately)
  */
 func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.ReceiveFunc) {
+	device.routineReceiveIncoming(maxBatchSize, recv, device.service)
+}
+
+func (device *Device) routineReceiveIncoming(maxBatchSize int, recv conn.ReceiveFunc, service *serviceRun) {
 	recvName := recv.PrettyName()
 	defer func() {
 		device.log.Verbosef("Routine: receive incoming %s - stopped", recvName)
@@ -107,7 +111,13 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
 	}()
 
 	for {
+		if err := service.wait(); err != nil {
+			return
+		}
 		count, err = recv(bufs, sizes, endpoints)
+		if waitErr := service.wait(); waitErr != nil {
+			return
+		}
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -285,6 +295,7 @@ func (device *Device) RoutineHandshake(id int) {
 	device.log.Verbosef("Routine: handshake worker %d - started", id)
 
 	for elem := range device.queue.handshake.c {
+		_ = device.service.wait() // preserve accepted handshake drain on close
 
 		// handle cookie fields and ratelimiting
 
@@ -449,6 +460,7 @@ func (peer *Peer) RoutineSequentialReceiver(maxBatchSize int) {
 		if elemsContainer == nil {
 			return
 		}
+		_ = peer.waitService() // before the completion mutex; cancel drains
 		elemsContainer.Lock()
 		validTailPacket := -1
 		dataPacketReceived := false

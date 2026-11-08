@@ -17,13 +17,16 @@ import (
 // devices. It limits concurrent crypto batches, not total CPU or packet WIP.
 // Create it with NewCryptoExecutor; the zero value cannot accept devices.
 type CryptoExecutor struct {
-	mu            sync.Mutex
-	cond          *sync.Cond
-	registrations []*cryptoRegistration
-	next          int // next device in the round-robin ring
-	closing       bool
-	workers       int
-	done          chan struct{}
+	mu             sync.Mutex
+	cond           *sync.Cond
+	registrations  []*cryptoRegistration
+	next           int // next device in the round-robin ring
+	closing        bool
+	workers        int
+	servicePolicy  *ServicePolicy
+	serviceWake    chan struct{} // coalesced notification while workers yield
+	serviceWaiters int           // protected by mu
+	done           chan struct{}
 }
 
 type cryptoRegistration struct {
@@ -44,10 +47,27 @@ type cryptoJob struct {
 // NewCryptoExecutor starts workers shared by both transport directions.
 // workers must be declared by the caller in [1, GOMAXPROCS]; it is not a CPU quota.
 func NewCryptoExecutor(workers int) (*CryptoExecutor, error) {
+	return newCryptoExecutor(workers, nil)
+}
+
+// NewCryptoExecutorWithServicePolicy opts into a shared process service floor.
+// The caller owns policy and must reuse it across executor epochs; closing this
+// executor does not close/reset policy. Existing constructors remain unpaced.
+func NewCryptoExecutorWithServicePolicy(workers int, policy *ServicePolicy) (*CryptoExecutor, error) {
+	if err := policy.validate(); err != nil {
+		return nil, err
+	}
+	return newCryptoExecutor(workers, policy)
+}
+
+func newCryptoExecutor(workers int, policy *ServicePolicy) (*CryptoExecutor, error) {
 	if workers < 1 || workers > runtime.GOMAXPROCS(0) {
 		return nil, fmt.Errorf("crypto workers must be in [1, %d]", runtime.GOMAXPROCS(0))
 	}
-	exec := &CryptoExecutor{workers: workers, done: make(chan struct{})}
+	exec := &CryptoExecutor{workers: workers, done: make(chan struct{}), servicePolicy: policy}
+	if policy != nil {
+		exec.serviceWake = make(chan struct{}, 1)
+	}
 	exec.cond = sync.NewCond(&exec.mu)
 	for i := 0; i < workers; i++ {
 		go exec.run()
@@ -66,6 +86,12 @@ func NewDeviceWithCryptoExecutor(tunDevice tun.Device, bind conn.Bind, logger *L
 	if exec.done == nil || exec.closing {
 		exec.mu.Unlock()
 		return nil, errors.New("crypto executor is not accepting devices")
+	}
+	if exec.servicePolicy != nil {
+		if err := exec.servicePolicy.validate(); err != nil {
+			exec.mu.Unlock()
+			return nil, err
+		}
 	}
 	registration := &cryptoRegistration{executor: exec}
 	// Reserve admission before initialization; Close also waits for this device.
@@ -101,6 +127,12 @@ func (exec *CryptoExecutor) Close(ctx context.Context) error {
 
 func (exec *CryptoExecutor) notify(_ *cryptoRegistration) {
 	exec.mu.Lock()
+	if exec.serviceWaiters != 0 {
+		select {
+		case exec.serviceWake <- struct{}{}:
+		default:
+		}
+	}
 	exec.cond.Broadcast()
 	exec.mu.Unlock()
 }
@@ -122,12 +154,15 @@ func (device *Device) enqueueDecryption(container *QueueInboundElementsContainer
 // nextJob is called under mu. Queue publication precedes notify taking the same
 // mutex, so a scan followed by cond.Wait cannot lose a publication or EOF wakeup.
 // Scanning costs O(devices); each lane has at most one active batch.
-func (exec *CryptoExecutor) nextJob() (cryptoJob, bool) {
+func (exec *CryptoExecutor) nextJob(allowData bool) (cryptoJob, bool) {
 	devices := len(exec.registrations)
 	for offset := 0; offset < devices; offset++ {
 		index := (exec.next + offset) % devices
 		registration := exec.registrations[index]
 		if registration.device == nil {
+			continue
+		}
+		if !allowData && !registration.device.isClosed() {
 			continue
 		}
 		for turn := 0; turn < 2; turn++ {
@@ -170,6 +205,19 @@ func (exec *CryptoExecutor) nextJob() (cryptoJob, bool) {
 	return cryptoJob{}, false
 }
 
+// servicePending is called under mu and only decides whether a timer is useful.
+// An idle executor stays on cond.Wait without arming the process policy.
+func (exec *CryptoExecutor) servicePending() bool {
+	for _, registration := range exec.registrations {
+		if registration.device != nil &&
+			(!registration.active[0] && len(registration.device.queue.encryption.c) != 0 ||
+				!registration.active[1] && len(registration.device.queue.decryption.c) != 0) {
+			return true
+		}
+	}
+	return false
+}
+
 func (exec *CryptoExecutor) run() {
 	var encryption encryptionScratch
 	var decryption decryptionScratch
@@ -182,12 +230,29 @@ func (exec *CryptoExecutor) run() {
 		exec.mu.Unlock()
 	}()
 	for {
-		job, ok := exec.nextJob()
+		allowData := true
+		if exec.servicePolicy != nil {
+			exec.mu.Unlock()
+			allowData = exec.servicePolicy.allowed()
+			exec.mu.Lock()
+		}
+		job, ok := exec.nextJob(allowData)
 		if !ok {
 			if exec.closing && len(exec.registrations) == 0 {
 				return
 			}
-			exec.cond.Wait()
+			if !allowData && exec.servicePending() {
+				// No job is reserved while yielding. Queue/close notification can
+				// wake us to drain closed devices and observe EOF without giving
+				// an early data grant to their still-live neighbours.
+				exec.serviceWaiters++
+				exec.mu.Unlock()
+				_ = exec.servicePolicy.wait(context.Background(), exec.serviceWake)
+				exec.mu.Lock()
+				exec.serviceWaiters--
+			} else {
+				exec.cond.Wait()
+			}
 			continue
 		}
 		exec.mu.Unlock()

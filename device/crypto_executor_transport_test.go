@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,14 +31,19 @@ func cryptoTestExecutor(t *testing.T) *CryptoExecutor {
 
 func TestCryptoExecutorTransport(t *testing.T) {
 	goroutineLeakCheck(t)
-	for _, mode := range []string{"shared", "shared_legacy", "legacy_shared"} {
+	for _, mode := range []string{"shared", "shared_legacy", "legacy_shared", "floor", "floor_legacy", "legacy_floor"} {
 		t.Run(mode, func(t *testing.T) {
-			exec := cryptoTestExecutor(t)
+			var exec *CryptoExecutor
+			if strings.Contains(mode, "floor") {
+				exec = serviceTestExecutor(t)
+			} else {
+				exec = cryptoTestExecutor(t)
+			}
 			executors := [2]*CryptoExecutor{exec, exec}
-			if mode == "shared_legacy" {
+			if mode == "shared_legacy" || mode == "floor_legacy" {
 				executors[1] = nil
 			}
-			if mode == "legacy_shared" {
+			if mode == "legacy_shared" || mode == "legacy_floor" {
 				executors[0] = nil
 			}
 			p := newR2FlowPairWithExecutors(t, executors)
@@ -106,5 +112,78 @@ func TestCryptoExecutorBlockedTUNClose(t *testing.T) {
 			p.send(t, 0, marker)
 			p.receive(t, 1, marker)
 		})
+	}
+}
+
+func serviceTestExecutor(t *testing.T) *CryptoExecutor {
+	t.Helper()
+	policy, err := NewServicePolicy(10*time.Millisecond, 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(policy.Close)
+	exec, err := NewCryptoExecutorWithServicePolicy(1, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := exec.Close(ctx); err != nil {
+			t.Error(err)
+		}
+		if snapshot := policy.Snapshot(); snapshot.Waiters != 0 || snapshot.TimerActive {
+			t.Error("device/executor shutdown left policy activity")
+		}
+	})
+	return exec
+}
+
+func TestServiceFloorBlockedTUNClose(t *testing.T) {
+	exec := serviceTestExecutor(t)
+	p := newR2FlowPairWithExecutors(t, [2]*CryptoExecutor{exec, exec})
+	warm := r2IPPacket(false, 1, 2, 1)
+	p.send(t, 0, warm)
+	p.receive(t, 1, warm)
+	gate := &r2WriteGate{entered: make(chan struct{}), release: make(chan struct{})}
+	p.tun[1].gate.Store(gate)
+	for i := range 64 {
+		p.send(t, 0, r2IPPacket(false, 1, 2, byte(i+2)))
+	}
+	select {
+	case <-gate.entered:
+	case <-time.After(time.Second):
+		t.Fatal("blocked Write not entered")
+	}
+	p.close(t)
+}
+
+func TestServiceFloorInvalidAEADAndNoise(t *testing.T) {
+	exec := serviceTestExecutor(t)
+	p := newR2FlowPairWithExecutors(t, [2]*CryptoExecutor{exec, exec})
+	warm := r2IPPacket(false, 1, 2, 1)
+	p.send(t, 0, warm)
+	p.receive(t, 1, warm)
+	wire := p.bind[0].last.Load().([]byte)
+	for range 8 {
+		batch := make([][]byte, 8)
+		for i := range batch {
+			if i%2 == 0 {
+				batch[i] = bytes.Clone(wire)
+				batch[i][len(batch[i])-1] ^= 1 // valid index, invalid tag
+			} else {
+				batch[i] = make([]byte, MessageInitiationSize)
+				batch[i][0] = MessageInitiationType // invalid Noise/MAC
+			}
+		}
+		p.bind[1].rx[0] <- batch
+	}
+	marker := r2IPPacket(false, 1, 2, 255)
+	p.send(t, 0, marker)
+	p.receive(t, 1, marker)
+	select {
+	case <-p.tun[1].rx:
+		t.Fatal("invalid flood delivered an IP packet")
+	default:
 	}
 }
