@@ -1,6 +1,9 @@
-# R2 resource profile: unpublished candidate
+# Dedicated R2 resource profile
 
-This dedicated-fork candidate is **not published or approved for deployment**.
+This experimental profile is dedicated to n-0x R2. General-purpose WireGuard
+use is outside its integration contract. Consumer acceptance and measurements
+are recorded in x-sys ADR 0012; publishing this dependency alone does not
+claim F5 closure or deployment approval.
 It preserves the upstream MIT LICENSE, module path and full history from
 WireGuard/wireguard-go commit
 `b3bc704ef0ee21a36298601a9e1e5ff90377ac52` at
@@ -81,24 +84,21 @@ checks compile device/conn test binaries with `go test -c -o /dev/null`; they
 do not execute a foreign target or use a dummy executor. Detailed commands,
 results, SHA and freeze evidence are in the external promotion report.
 
-## Temporary consumption and publication decision
+## Versioned consumption and provenance
 
-The coordinator or peer owner can set R2_CONSUMER_ROOT to the consumer worktree
-with the oversize fix and use an external modfile; these commands do not edit
-consumer go.mod/go.sum and need **no build flags** on Linux/Darwin:
+The dedicated fork is https://github.com/n-0x/wireguard-go. Version
+`v0.0.0-r2.1` retains the upstream module path and is consumed with a remote,
+versioned replacement, with no consumer build flags on Linux/Darwin:
 
 ```sh
-r2_consumer_root=${R2_CONSUMER_ROOT:-/Users/adri4n/orca/workspaces/x-sys/r2-wg-bounds-options}
-r2_candidate_root=/tmp/r2-wg-published-candidate
-mkdir -p "$r2_candidate_root/evidence"
-cp "$r2_consumer_root/go.mod" "$r2_candidate_root/evidence/consumer.mod"
-cp "$r2_consumer_root/go.sum" "$r2_candidate_root/evidence/consumer.sum"
-GOWORK=off go -C "$r2_consumer_root" mod edit -modfile="$r2_candidate_root/evidence/consumer.mod" -replace=golang.zx2c4.com/wireguard="$r2_candidate_root"
-GOWORK=off go -C "$r2_consumer_root" test -modfile="$r2_candidate_root/evidence/consumer.mod" ./agent/internal/peer -run 'TestWGCompactBind|TestWGIngress|TestWGCompactGROFullDatagram' -count=1
+go mod edit -replace=golang.zx2c4.com/wireguard=github.com/n-0x/wireguard-go@v0.0.0-r2.1
+go mod tidy
 ```
 
-On a supported Linux runner, set WG_GRO_TEST=1 for the consumer's existing GRO
-regression. This worker does not execute consumer tests or sustained traffic.
-Publication, remote/module/version policy and promotion to a consumed immutable
-dependency remain the coordinator's decision after valid-fixture dynamic smoke.
-No remote fork, tag, push or publication is performed by this preparation.
+Use only with the integration contract above and the consumer's oversize
+reader-survival regression. The upstream base and MIT license remain in this
+repository; cryptographic and wire source is unchanged from that base. Updating
+upstream or changing R2 topology/MTU/batch requires revalidating the resource
+bound, platform selection, transit, lifecycle and consumer F5 acceptance.
+The original candidate evaluation used an external modfile and local replacement;
+no local replacement is required by the published consumer.
