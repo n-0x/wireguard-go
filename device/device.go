@@ -309,6 +309,9 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	// start workers
 
 	cpus := runtime.NumCPU()
+	if resourceProfileWorkers != 0 {
+		cpus = resourceProfileWorkers
+	}
 	device.state.stopping.Wait()
 	device.queue.encryption.wg.Add(cpus) // One for each RoutineHandshake
 	for i := 0; i < cpus; i++ {

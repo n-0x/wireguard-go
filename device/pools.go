@@ -11,6 +11,7 @@ import (
 
 type WaitPool struct {
 	pool  sync.Pool
+	cache chan any // bounded idle cache in the opt-in R2 resource profile
 	cond  sync.Cond
 	lock  sync.Mutex
 	count uint32 // Get calls not yet Put back
@@ -20,6 +21,9 @@ type WaitPool struct {
 func NewWaitPool(max uint32, new func() any) *WaitPool {
 	p := &WaitPool{pool: sync.Pool{New: new}, max: max}
 	p.cond = sync.Cond{L: &p.lock}
+	if resourceProfileCacheCapacity != 0 {
+		p.cache = make(chan any, resourceProfileCacheCapacity)
+	}
 	return p
 }
 
@@ -32,11 +36,31 @@ func (p *WaitPool) Get() any {
 		p.count++
 		p.lock.Unlock()
 	}
+	if p.cache != nil {
+		select {
+		case x := <-p.cache:
+			return x
+		default:
+			if p.pool.New != nil {
+				return p.pool.New()
+			}
+			return nil
+		}
+	}
 	return p.pool.Get()
 }
 
 func (p *WaitPool) Put(x any) {
-	p.pool.Put(x)
+	if p.cache != nil {
+		if x != nil {
+			select {
+			case p.cache <- x:
+			default:
+			}
+		}
+	} else {
+		p.pool.Put(x)
+	}
 	if p.max == 0 {
 		return
 	}

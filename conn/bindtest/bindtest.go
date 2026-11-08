@@ -11,11 +11,13 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync"
 
 	"golang.zx2c4.com/wireguard/conn"
 )
 
 type ChannelBind struct {
+	mu               sync.RWMutex
 	rx4, tx4         *chan []byte
 	rx6, tx6         *chan []byte
 	closeSignal      chan bool
@@ -68,7 +70,9 @@ func (c ChannelEndpoint) DstIP() netip.Addr { return netip.AddrFrom4([4]byte{127
 func (c ChannelEndpoint) SrcIP() netip.Addr { return netip.Addr{} }
 
 func (c *ChannelBind) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint16, err error) {
+	c.mu.Lock()
 	c.closeSignal = make(chan bool)
+	c.mu.Unlock()
 	fns = append(fns, c.makeReceiveFunc(*c.rx4))
 	fns = append(fns, c.makeReceiveFunc(*c.rx6))
 	if rand.Uint32()&1 == 0 {
@@ -79,6 +83,8 @@ func (c *ChannelBind) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint
 }
 
 func (c *ChannelBind) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.closeSignal != nil {
 		select {
 		case <-c.closeSignal:
@@ -94,9 +100,12 @@ func (c *ChannelBind) BatchSize() int { return 1 }
 func (c *ChannelBind) SetMark(mark uint32) error { return nil }
 
 func (c *ChannelBind) makeReceiveFunc(ch chan []byte) conn.ReceiveFunc {
+	c.mu.RLock()
+	closeSignal := c.closeSignal
+	c.mu.RUnlock()
 	return func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (n int, err error) {
 		select {
-		case <-c.closeSignal:
+		case <-closeSignal:
 			return 0, net.ErrClosed
 		case rx := <-ch:
 			copied := copy(bufs[0], rx)
@@ -108,9 +117,12 @@ func (c *ChannelBind) makeReceiveFunc(ch chan []byte) conn.ReceiveFunc {
 }
 
 func (c *ChannelBind) Send(bufs [][]byte, ep conn.Endpoint) error {
+	c.mu.RLock()
+	closeSignal := c.closeSignal
+	c.mu.RUnlock()
 	for _, b := range bufs {
 		select {
-		case <-c.closeSignal:
+		case <-closeSignal:
 			return net.ErrClosed
 		default:
 			bc := make([]byte, len(b))

@@ -1,4 +1,4 @@
-//go:build ios
+//go:build ios && !r2resourceprofile
 
 /* SPDX-License-Identifier: MIT
  *

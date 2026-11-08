@@ -200,6 +200,9 @@ again:
 
 func (s *StdNetBind) putMessages(msgs *[]ipv6.Message) {
 	for i := range *msgs {
+		if resourceProfileReleaseBuffers {
+			clear((*msgs)[i].Buffers)
+		}
 		(*msgs)[i].OOB = (*msgs)[i].OOB[:0]
 		(*msgs)[i] = ipv6.Message{Buffers: (*msgs)[i].Buffers, OOB: (*msgs)[i].OOB}
 	}
