@@ -157,7 +157,11 @@ again:
 	var v4pc *ipv4.PacketConn
 	var v6pc *ipv6.PacketConn
 
-	v4conn, port, err = s.listenSocket("udp4", port)
+	v4conn, v4port, v4err := s.listenSocket("udp4", port)
+	err = v4err
+	if v4err == nil {
+		port = v4port
+	}
 	if err != nil && !errors.Is(err, syscall.EAFNOSUPPORT) {
 		return nil, 0, err
 	}

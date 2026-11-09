@@ -224,3 +224,29 @@ func TestOwnedSocketPortRetry(t *testing.T) {
 		}
 	}
 }
+
+func TestOwnedSocketFixedSingleFamily(t *testing.T) {
+	for _, family := range []string{"udp4", "udp6"} {
+		t.Run(family, func(t *testing.T) {
+			reservation, err := net.ListenUDP(family, &net.UDPAddr{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			requested := uint16(reservation.LocalAddr().(*net.UDPAddr).Port)
+			reservation.Close()
+			observed := 0
+			b := NewStdNetBindWithSocketFactory(func(network string, addr *net.UDPAddr) (UDPSocket, error) {
+				if network != family {
+					return nil, syscall.EAFNOSUPPORT
+				}
+				observed = addr.Port
+				return net.ListenUDP(network, addr)
+			})
+			defer b.Close()
+			fns, port, err := b.Open(requested)
+			if err != nil || len(fns) != 1 || port != requested || observed != int(requested) {
+				t.Fatalf("fixed single family port=%d requested=%d factoryPort=%d receivers=%d err=%v", port, requested, observed, len(fns), err)
+			}
+		})
+	}
+}
