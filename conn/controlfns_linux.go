@@ -49,7 +49,7 @@ func init() {
 		// using SO_*BUFFORCE. This requires CAP_NET_ADMIN, and is allowed here to
 		// fail silently - the result of failure is lower performance on very fast
 		// links or high latency links.
-		func(network, address string, c syscall.RawConn) error {
+		func(network, address string, c syscall.RawConn, alreadyBound bool) error {
 			return c.Control(func(fd uintptr) {
 				// Set up to *mem_max
 				_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, socketBufferSize)
@@ -62,7 +62,7 @@ func init() {
 
 		// Enable receiving of the packet information (IP_PKTINFO for IPv4,
 		// IPV6_PKTINFO for IPv6) that is used to implement sticky socket support.
-		func(network, address string, c syscall.RawConn) error {
+		func(network, address string, c syscall.RawConn, alreadyBound bool) error {
 			var err error
 			switch network {
 			case "udp4":
@@ -79,7 +79,16 @@ func init() {
 							return
 						}
 					}
-					err = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_V6ONLY, 1)
+					if !alreadyBound {
+						err = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_V6ONLY, 1)
+					} else {
+						// net.ListenUDP("udp6") already sets this before bind.
+						var only int
+						only, err = unix.GetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_V6ONLY)
+						if err == nil && only != 1 {
+							err = unix.EINVAL
+						}
+					}
 				})
 			default:
 				err = fmt.Errorf("unhandled network: %s: %w", network, unix.EINVAL)
@@ -88,7 +97,7 @@ func init() {
 		},
 
 		// Attempt to enable UDP_GRO
-		func(network, address string, c syscall.RawConn) error {
+		func(network, address string, c syscall.RawConn, alreadyBound bool) error {
 			// Kernels below 5.12 are missing 98184612aca0 ("net:
 			// udp: Add support for getsockopt(..., ..., UDP_GRO,
 			// ..., ...);"), which means we can't read this back

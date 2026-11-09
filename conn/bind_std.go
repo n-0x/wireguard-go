@@ -31,8 +31,9 @@ var (
 // proposal in https://github.com/golang/go/issues/45886#issuecomment-1218301564.
 type StdNetBind struct {
 	mu            sync.Mutex // protects all fields except as specified
-	ipv4          *net.UDPConn
-	ipv6          *net.UDPConn
+	socketFactory UDPSocketFactory
+	ipv4          UDPSocket
+	ipv6          UDPSocket
 	ipv4PC        *ipv4.PacketConn // will be nil on non-Linux
 	ipv6PC        *ipv6.PacketConn // will be nil on non-Linux
 	ipv4TxOffload bool
@@ -152,24 +153,32 @@ func (s *StdNetBind) Open(uport uint16) ([]ReceiveFunc, uint16, error) {
 	// If uport is 0, we can retry on failure.
 again:
 	port := int(uport)
-	var v4conn, v6conn *net.UDPConn
+	var v4conn, v6conn UDPSocket
 	var v4pc *ipv4.PacketConn
 	var v6pc *ipv6.PacketConn
 
-	v4conn, port, err = listenNet("udp4", port)
+	v4conn, port, err = s.listenSocket("udp4", port)
 	if err != nil && !errors.Is(err, syscall.EAFNOSUPPORT) {
 		return nil, 0, err
 	}
 
 	// Listen on the same port as we're using for ipv4.
-	v6conn, port, err = listenNet("udp6", port)
+	v6conn, v6port, v6err := s.listenSocket("udp6", port)
+	err = v6err
+	if v6err == nil {
+		port = v6port
+	}
 	if uport == 0 && errors.Is(err, syscall.EADDRINUSE) && tries < 100 {
-		v4conn.Close()
+		if v4conn != nil {
+			v4conn.Close()
+		}
 		tries++
 		goto again
 	}
 	if err != nil && !errors.Is(err, syscall.EAFNOSUPPORT) {
-		v4conn.Close()
+		if v4conn != nil {
+			v4conn.Close()
+		}
 		return nil, 0, err
 	}
 	var fns []ReceiveFunc
@@ -228,7 +237,7 @@ type batchWriter interface {
 
 func (s *StdNetBind) receiveIP(
 	br batchReader,
-	conn *net.UDPConn,
+	conn UDPSocket,
 	rxOffload bool,
 	bufs [][]byte,
 	sizes []int,
@@ -280,13 +289,13 @@ func (s *StdNetBind) receiveIP(
 	return numMsgs, nil
 }
 
-func (s *StdNetBind) makeReceiveIPv4(pc *ipv4.PacketConn, conn *net.UDPConn, rxOffload bool) ReceiveFunc {
+func (s *StdNetBind) makeReceiveIPv4(pc *ipv4.PacketConn, conn UDPSocket, rxOffload bool) ReceiveFunc {
 	return func(bufs [][]byte, sizes []int, eps []Endpoint) (n int, err error) {
 		return s.receiveIP(pc, conn, rxOffload, bufs, sizes, eps)
 	}
 }
 
-func (s *StdNetBind) makeReceiveIPv6(pc *ipv6.PacketConn, conn *net.UDPConn, rxOffload bool) ReceiveFunc {
+func (s *StdNetBind) makeReceiveIPv6(pc *ipv6.PacketConn, conn UDPSocket, rxOffload bool) ReceiveFunc {
 	return func(bufs [][]byte, sizes []int, eps []Endpoint) (n int, err error) {
 		return s.receiveIP(pc, conn, rxOffload, bufs, sizes, eps)
 	}
@@ -370,12 +379,12 @@ func (s *StdNetBind) Send(bufs [][]byte, endpoint Endpoint) error {
 	defer s.udpAddrPool.Put(ua)
 	if is6 {
 		as16 := endpoint.DstIP().As16()
-		copy(ua.IP, as16[:])
 		ua.IP = ua.IP[:16]
+		copy(ua.IP, as16[:])
 	} else {
 		as4 := endpoint.DstIP().As4()
-		copy(ua.IP, as4[:])
 		ua.IP = ua.IP[:4]
+		copy(ua.IP, as4[:])
 	}
 	ua.Port = int(endpoint.(*StdNetEndpoint).Port())
 	var (
@@ -412,7 +421,7 @@ retry:
 	return err
 }
 
-func (s *StdNetBind) send(conn *net.UDPConn, pc batchWriter, msgs []ipv6.Message) error {
+func (s *StdNetBind) send(conn UDPSocket, pc batchWriter, msgs []ipv6.Message) error {
 	var (
 		n     int
 		err   error

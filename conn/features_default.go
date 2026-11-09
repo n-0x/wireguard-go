@@ -8,8 +8,6 @@
 
 package conn
 
-import "net"
-
-func supportsUDPOffload(_ *net.UDPConn) (txOffload, rxOffload bool) {
+func supportsUDPOffload(_ UDPSocket) (txOffload, rxOffload bool) {
 	return
 }

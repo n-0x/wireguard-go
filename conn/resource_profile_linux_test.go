@@ -34,6 +34,9 @@ func TestR2KernelGROStaging(t *testing.T) {
 		} {
 			t.Run(family+"/"+shape.name, func(t *testing.T) {
 				b := NewStdNetBind().(*StdNetBind)
+				if os.Getenv("R2_OWNED_SOCKET") == "1" {
+					b = ownedSocketTestBind()
+				}
 				fns, port, err := b.Open(0)
 				if err != nil {
 					t.Fatal(err)
@@ -195,6 +198,9 @@ func TestR2KernelGSOSendAndDisabledFallback(t *testing.T) {
 	for _, disabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("offload_disabled_%v", disabled), func(t *testing.T) {
 			b := NewStdNetBind().(*StdNetBind)
+			if os.Getenv("R2_OWNED_SOCKET") == "1" {
+				b = ownedSocketTestBind()
+			}
 			_, _, err := b.Open(0)
 			if err != nil {
 				t.Fatal(err)

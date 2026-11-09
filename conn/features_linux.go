@@ -6,12 +6,10 @@
 package conn
 
 import (
-	"net"
-
 	"golang.org/x/sys/unix"
 )
 
-func supportsUDPOffload(conn *net.UDPConn) (txOffload, rxOffload bool) {
+func supportsUDPOffload(conn UDPSocket) (txOffload, rxOffload bool) {
 	rc, err := conn.SyscallConn()
 	if err != nil {
 		return
